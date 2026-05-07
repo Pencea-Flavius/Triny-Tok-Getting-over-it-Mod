@@ -185,6 +185,7 @@ namespace TrinyTokGOI
         public int    duration;
         public string type;
         public string viewer;
+        public int    count;
 
         public bool IsKeepAlive() => id == 0 && type == "255";
     }
