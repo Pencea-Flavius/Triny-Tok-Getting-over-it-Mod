@@ -1,0 +1,10 @@
+bin/
+obj/
+
+# Game DLLs 
+*.dll
+
+# Mono/VS artifacts
+*.user
+*.suo
+.vs/
