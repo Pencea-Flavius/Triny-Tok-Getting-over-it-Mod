@@ -19,23 +19,23 @@ namespace TrinyTokGOI
         private TrinyTokClient client;
 
         // Active game-object references (populated by Harmony patches each frame)
-        public static bool friction     = false;
-        public static int  gravity      = 0;  // 0=normal 1=low 2=high -2=zero
-        public static bool flip         = false;
-        public static bool spin         = false;
-        public static bool invert       = false;
+        public static bool friction = false;
+        public static int gravity = 0;  // 0=normal 1=low 2=high -2=zero
+        public static bool flip = false;
+        public static bool spin = false;
+        public static bool invert = false;
         public static PlayerControl player = null;
-        public static PotSounds     pot    = null;
-        public static Saviour       save   = null;
+        public static PotSounds pot = null;
+        public static Saviour save = null;
 
         // Actions queued from background thread, drained on the Unity main thread
-        public static readonly Queue<Action>         PendingActions = new Queue<Action>();
+        public static readonly Queue<Action> PendingActions = new Queue<Action>();
         // Effects that arrived while game was paused/not-ready; drained on next ready FixedUpdate
-        public static readonly Queue<EffectRequest>  PauseBuffer    = new Queue<EffectRequest>();
+        public static readonly Queue<EffectRequest> PauseBuffer = new Queue<EffectRequest>();
 
         // Timed effects: key -> expiry time + cleanup callback
-        private static readonly Dictionary<string, DateTime> _effectExpiry  = new Dictionary<string, DateTime>();
-        private static readonly Dictionary<string, Action>   _effectCleanup = new Dictionary<string, Action>();
+        private static readonly Dictionary<string, DateTime> _effectExpiry = new Dictionary<string, DateTime>();
+        private static readonly Dictionary<string, Action> _effectCleanup = new Dictionary<string, Action>();
 
         public static bool GameReady()
         {
@@ -55,7 +55,7 @@ namespace TrinyTokGOI
         {
             lock (_effectExpiry)
             {
-                _effectExpiry[key]  = DateTime.UtcNow.AddSeconds(durationSec);
+                _effectExpiry[key] = DateTime.UtcNow.AddSeconds(durationSec);
                 _effectCleanup[key] = onExpire;
             }
         }
@@ -182,8 +182,8 @@ namespace TrinyTokGOI
                 // Force physics
                 foreach (var rb in clone.GetComponentsInChildren<Rigidbody2D>())
                 {
-                    rb.isKinematic  = false;
-                    rb.simulated    = true;
+                    rb.isKinematic = false;
+                    rb.simulated = true;
                     rb.gravityScale = 1f;
                     rb.WakeUp();
                 }
@@ -221,7 +221,7 @@ namespace TrinyTokGOI
                         if (clone.GetComponentInChildren<Collider2D>() == null)
                         {
                             var col = clone.AddComponent<CircleCollider2D>();
-                            col.radius    = 0.35f;
+                            col.radius = 0.20f;
                             col.isTrigger = false;
                         }
                     }
@@ -229,13 +229,13 @@ namespace TrinyTokGOI
                     {
                         foreach (var rb in rbs)
                         {
-                            rb.isKinematic  = false;
-                            rb.simulated    = true;
+                            rb.isKinematic = false;
+                            rb.simulated = true;
                             rb.gravityScale = 1f;
                             rb.WakeUp();
                         }
                     }
-                    MelonLogger.Msg($"SpawnProp: spawned [{i+1}/{count}] at ({pos.x:F1},{pos.y:F1},{pos.z:F1})");
+                    MelonLogger.Msg($"SpawnProp: spawned [{i + 1}/{count}] at ({pos.x:F1},{pos.y:F1},{pos.z:F1})");
                 }
                 catch (Exception ex) { MelonLogger.Error($"SpawnProp iter {i}: {ex.Message}"); }
             }
@@ -243,9 +243,9 @@ namespace TrinyTokGOI
 
         private void ApplyEffect(EffectRequest request)
         {
-            int    status  = EffectResponse.STATUS_SUCCESS;
+            int status = EffectResponse.STATUS_SUCCESS;
             string message = "";
-            float  dur     = request.duration > 0 ? request.duration / 1000f : 30f;
+            float dur = request.duration > 0 ? request.duration / 1000f : 30f;
 
             LoggerInstance.Msg($"Effect received: {request.code} | GameReady={GameReady()} | pot={(pot != null ? "ok" : "null")} | player={(player != null ? "ok" : "null")} | save={(save != null ? "ok" : "null")}");
 
@@ -280,7 +280,8 @@ namespace TrinyTokGOI
                         if (TryDeferWhilePaused(request, !GameReady())) return;
                         gravity = 1;
                         Physics2D.gravity = new Vector2(0f, -10f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        {
                             gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
                         }));
                         break;
@@ -289,7 +290,8 @@ namespace TrinyTokGOI
                         if (TryDeferWhilePaused(request, !GameReady())) return;
                         gravity = 2;
                         Physics2D.gravity = new Vector2(0f, -45f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        {
                             gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
                         }));
                         break;
@@ -298,7 +300,8 @@ namespace TrinyTokGOI
                         if (TryDeferWhilePaused(request, !GameReady())) return;
                         gravity = -2;
                         Physics2D.gravity = new Vector2(0f, 0f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        {
                             gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
                         }));
                         break;
@@ -307,9 +310,10 @@ namespace TrinyTokGOI
                     case "low_friction":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
                         pot.slidingFriction.friction = 0.1f;
-                        pot.staticFriction.friction  = 0.3f;
+                        pot.staticFriction.friction = 0.3f;
                         friction = true;
-                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                        {
                             if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
                             friction = false;
                         }));
@@ -318,9 +322,10 @@ namespace TrinyTokGOI
                     case "high_friction":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
                         pot.slidingFriction.friction = 0.6f;
-                        pot.staticFriction.friction  = 1f;
+                        pot.staticFriction.friction = 1f;
                         friction = true;
-                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                        {
                             if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
                             friction = false;
                         }));
@@ -331,7 +336,8 @@ namespace TrinyTokGOI
                         if (TryDeferWhilePaused(request, !GameReady() || flip || spin)) return;
                         flip = true;
                         Camera.main.transform.Rotate(0f, 0f, 180f);
-                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                        {
                             Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
                             flip = false;
                         }));
@@ -340,7 +346,8 @@ namespace TrinyTokGOI
                     case "spin_camera":
                         if (TryDeferWhilePaused(request, !GameReady() || flip || spin)) return;
                         spin = true;
-                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() => {
+                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                        {
                             Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
                             spin = false;
                         }));
@@ -363,8 +370,7 @@ namespace TrinyTokGOI
                     case "spawn_orange":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
                         LoggerInstance.Msg($"spawn_orange count={request.count}");
-                        SpawnProp(GameObject.Find("Orange") != null ? "Orange" : "ORANGE",
-                                  request.count <= 0 ? 1 : request.count);
+                        SpawnProp("Props/Orange/ORANGE (1)", request.count <= 0 ? 1 : request.count);
                         break;
 
                     case "spawn_gift":
@@ -374,14 +380,14 @@ namespace TrinyTokGOI
                         break;
 
                     default:
-                        status  = EffectResponse.STATUS_FAILURE;
+                        status = EffectResponse.STATUS_FAILURE;
                         message = "Unknown effect: " + request.code;
                         break;
                 }
             }
             catch (Exception ex)
             {
-                status  = EffectResponse.STATUS_FAILURE;
+                status = EffectResponse.STATUS_FAILURE;
                 message = ex.Message;
                 LoggerInstance.Error($"ApplyEffect failed for {request.code}: {ex}");
             }
@@ -427,9 +433,9 @@ namespace TrinyTokGOI
 
             switch (TrinyTokGOIMod.gravity)
             {
-                case  1:  Physics2D.gravity = new Vector2(0f, -10f); break;
-                case  2:  Physics2D.gravity = new Vector2(0f, -45f); break;
-                case -2:  Physics2D.gravity = new Vector2(0f,   0f); break;
+                case 1: Physics2D.gravity = new Vector2(0f, -10f); break;
+                case 2: Physics2D.gravity = new Vector2(0f, -45f); break;
+                case -2: Physics2D.gravity = new Vector2(0f, 0f); break;
             }
 
             if (TrinyTokGOIMod.spin)
