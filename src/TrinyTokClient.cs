@@ -186,6 +186,7 @@ namespace TrinyTokGOI
         public string type;
         public string viewer;
         public int    count;
+        public float  power;   // force multiplier for launch/shove (0 = use default)
 
         public bool IsKeepAlive() => id == 0 && type == "255";
     }

@@ -149,6 +149,56 @@ namespace TrinyTokGOI
             return true;
         }
 
+        // Decide where a spawned prop/gift appears.
+        // For small amounts (<=10) keep the original gentle stack near the pot.
+        // For larger amounts, rain them down: spread randomly over a wide area
+        // above the player with a CAPPED height so they never pile into space
+        // (which used to launch everything and trigger the end scene).
+        private static Vector3 ComputeSpawnPos(Vector2 potPos, float z, int i, int count)
+        {
+            if (count > 10)
+            {
+                float xOff = UnityEngine.Random.Range(-9f, 9f);
+                float yOff = UnityEngine.Random.Range(7f, 18f);
+                return new Vector3(potPos.x + xOff, potPos.y + yOff, z);
+            }
+            float x = UnityEngine.Random.Range(-1.2f, 1.2f);
+            return new Vector3(potPos.x + x, potPos.y + 5f + i * 0.9f, z);
+        }
+
+        // Only Hammer: turn body + pot colliders into triggers (pass-through, so only
+        // the hammer collides) and hide the man + pot mesh. Mirrors ModOnlyHammer.
+        private static void SetOnlyHammer(bool on)
+        {
+            var playerGO = GameObject.Find("Player");
+            if (playerGO == null) return;
+            var t = playerGO.transform;
+
+            var bodyCol = playerGO.GetComponent<PolygonCollider2D>();
+            if (bodyCol != null) bodyCol.isTrigger = on;
+
+            var potColT = t.Find("PotCollider");
+            if (potColT != null)
+            {
+                var pc = potColT.GetComponent<PolygonCollider2D>();
+                if (pc != null) pc.isTrigger = on;
+                var sidesT = potColT.Find("Sides");
+                if (sidesT != null)
+                    foreach (var c in sidesT.GetComponents<PolygonCollider2D>())
+                        c.isTrigger = on;
+            }
+
+            var dude = t.Find("dude");
+            if (dude != null) dude.gameObject.SetActive(!on);
+
+            var potT = t.Find("Pot");
+            if (potT != null)
+            {
+                var mesh = potT.Find("Mesh");
+                if (mesh != null) mesh.gameObject.SetActive(!on);
+            }
+        }
+
         private static void SpawnGift(int count)
         {
             // The gift box has OpenGift component and is INACTIVE by default —
@@ -165,8 +215,7 @@ namespace TrinyTokGOI
             Vector2 potPos = pot.potRB.position;
             for (int i = 0; i < count; i++)
             {
-                float xOff = UnityEngine.Random.Range(-1.2f, 1.2f);
-                var pos = new Vector3(potPos.x + xOff, potPos.y + 5f + i * 0.9f, src.transform.position.z);
+                var pos = ComputeSpawnPos(potPos, src.transform.position.z, i, count);
                 var clone = UnityEngine.Object.Instantiate(src, pos, src.transform.rotation);
                 clone.name = "gift_spawned";
                 clone.SetActive(true);
@@ -207,8 +256,7 @@ namespace TrinyTokGOI
             {
                 try
                 {
-                    float xOff = UnityEngine.Random.Range(-1.2f, 1.2f);
-                    var pos = new Vector3(potPos.x + xOff, potPos.y + 5f + i * 0.9f, src.transform.position.z);
+                    var pos = ComputeSpawnPos(potPos, src.transform.position.z, i, count);
                     var clone = UnityEngine.Object.Instantiate(src, pos, src.transform.rotation);
                     clone.name = sourceName + "_spawned";
                     clone.SetActive(true);
@@ -246,6 +294,7 @@ namespace TrinyTokGOI
             int status = EffectResponse.STATUS_SUCCESS;
             string message = "";
             float dur = request.duration > 0 ? request.duration / 1000f : 30f;
+            float power = request.power > 0f ? request.power : 1f;   // force multiplier, default 1x
 
             LoggerInstance.Msg($"Effect received: {request.code} | GameReady={GameReady()} | pot={(pot != null ? "ok" : "null")} | player={(player != null ? "ok" : "null")} | save={(save != null ? "ok" : "null")}");
 
@@ -256,8 +305,8 @@ namespace TrinyTokGOI
                     // ── Instant ───────────────────────────────────────────────────
                     case "launch":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        pot.potRB.velocity = new Vector2(pot.potRB.velocity.x, 10f);
-                        pot.potRB.AddForce(new Vector2(0f, 200000f));
+                        pot.potRB.velocity = new Vector2(pot.potRB.velocity.x, 10f * power);
+                        pot.potRB.AddForce(new Vector2(0f, 200000f * power));
                         break;
 
                     case "reset_progress":
@@ -267,12 +316,12 @@ namespace TrinyTokGOI
 
                     case "shove_left":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        pot.potRB.AddForce(new Vector2(-100000f, 10000f));
+                        pot.potRB.AddForce(new Vector2(-100000f * power, 10000f));
                         break;
 
                     case "shove_right":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        pot.potRB.AddForce(new Vector2(100000f, 10000f));
+                        pot.potRB.AddForce(new Vector2(100000f * power, 10000f));
                         break;
 
                     // ── Gravity (timed) ──────────────────────────────────────────
@@ -351,6 +400,86 @@ namespace TrinyTokGOI
                             Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
                             spin = false;
                         }));
+                        break;
+
+                    // ── Hammer size (timed) ──────────────────────────────────────
+                    // Same as the modpack's SetHammerMultiplier: the hammer is the
+                    // "Hub" child of Player; set its localScale to (val,val,val).
+                    case "big_hammer":
+                    case "small_hammer":
+                    {
+                        if (TryDeferWhilePaused(request, !GameReady() || player == null)) return;
+                        var hub = player.transform.Find("Hub");
+                        if (hub != null)
+                        {
+                            if (!EffectRunning("hammer_size"))
+                            {
+                                Vector3 baseScale = hub.localScale;
+                                float val = request.code == "big_hammer" ? 2.5f : 0.5f;
+                                hub.localScale = new Vector3(val, val, val);
+                                ScheduleTimedEffect("hammer_size", dur, () => PendingActions.Enqueue(() =>
+                                {
+                                    var h = player != null ? player.transform.Find("Hub") : null;
+                                    if (h != null) h.localScale = baseScale;
+                                }));
+                            }
+                        }
+                        else { status = EffectResponse.STATUS_FAILURE; message = "Hub (hammer) not found"; }
+                        break;
+                    }
+
+                    // ── Rolling Over It (timed) ──────────────────────────────────
+                    // Same as the modpack's ModRollingOverIt: widen the HingeJoint2D
+                    // angle limits on Player (normally ±15°) so the pot rolls freely.
+                    case "rolling_over_it":
+                    {
+                        if (TryDeferWhilePaused(request, !GameReady() || player == null)) return;
+                        var hinge = player.GetComponent<HingeJoint2D>();
+                        if (hinge != null)
+                        {
+                            if (!EffectRunning("rolling"))
+                            {
+                                JointAngleLimits2D orig = hinge.limits;
+                                hinge.limits = new JointAngleLimits2D { min = -1000000f, max = 1000000f };
+                                ScheduleTimedEffect("rolling", dur, () => PendingActions.Enqueue(() =>
+                                {
+                                    var hj = player != null ? player.GetComponent<HingeJoint2D>() : null;
+                                    if (hj != null) hj.limits = orig;
+                                }));
+                            }
+                        }
+                        else { status = EffectResponse.STATUS_FAILURE; message = "HingeJoint2D not found"; }
+                        break;
+                    }
+
+                    // ── Bouncy (timed) ───────────────────────────────────────────
+                    // Same as the modpack: raise bounciness on the pot's physics materials.
+                    case "bouncy":
+                        if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
+                        if (!EffectRunning("bouncy"))
+                        {
+                            float sB  = pot.slidingFriction != null ? pot.slidingFriction.bounciness : 0f;
+                            float stB = pot.staticFriction  != null ? pot.staticFriction.bounciness  : 0f;
+                            if (pot.slidingFriction != null) pot.slidingFriction.bounciness = 1f;
+                            if (pot.staticFriction  != null) pot.staticFriction.bounciness  = 1f;
+                            ScheduleTimedEffect("bouncy", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                if (pot != null && pot.slidingFriction != null) pot.slidingFriction.bounciness = sB;
+                                if (pot != null && pot.staticFriction  != null) pot.staticFriction.bounciness  = stB;
+                            }));
+                        }
+                        break;
+
+                    // ── Only Hammer (timed) ──────────────────────────────────────
+                    // Same as the modpack's ModOnlyHammer: make the body + pot colliders
+                    // triggers (so only the hammer collides) and hide their meshes.
+                    case "only_hammer":
+                        if (TryDeferWhilePaused(request, !GameReady() || player == null)) return;
+                        if (!EffectRunning("only_hammer"))
+                        {
+                            SetOnlyHammer(true);
+                            ScheduleTimedEffect("only_hammer", dur, () => PendingActions.Enqueue(() => SetOnlyHammer(false)));
+                        }
                         break;
 
                     // ── Input (timed) ────────────────────────────────────────────
