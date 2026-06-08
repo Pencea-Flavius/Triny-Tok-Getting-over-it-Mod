@@ -33,9 +33,15 @@ namespace TrinyTokGOI
         // Effects that arrived while game was paused/not-ready; drained on next ready FixedUpdate
         public static readonly Queue<EffectRequest> PauseBuffer = new Queue<EffectRequest>();
 
-        // Timed effects: key -> expiry time + cleanup callback
+        // Timed effects: slot -> expiry time + cleanup callback.
+        // A "slot" groups mutually-exclusive effects (e.g. big_hammer/small_hammer
+        // both live in slot "hammer_size"). Only one effect per slot runs at a time.
         private static readonly Dictionary<string, DateTime> _effectExpiry = new Dictionary<string, DateTime>();
         private static readonly Dictionary<string, Action> _effectCleanup = new Dictionary<string, Action>();
+        // slot -> code currently occupying it (so we can tell "same effect" from "different effect")
+        private static readonly Dictionary<string, string> _effectActiveCode = new Dictionary<string, string>();
+        // slot -> requests waiting for the slot to free up (different effect donated while one is active)
+        private static readonly Dictionary<string, Queue<EffectRequest>> _effectQueue = new Dictionary<string, Queue<EffectRequest>>();
 
         public static bool GameReady()
         {
@@ -66,16 +72,61 @@ namespace TrinyTokGOI
                 return _effectExpiry.TryGetValue(key, out var exp) && DateTime.UtcNow < exp;
         }
 
+        // Decide what to do when a timed effect arrives for `slot`.
+        // Returns true → the slot was free, the caller should apply the effect now
+        //                (and call ScheduleTimedEffect to register its expiry/cleanup).
+        // Returns false → handled here without applying:
+        //   • same effect re-donated while active → its timer is extended (+dur).
+        //   • a different effect for the same slot → queued, runs once this one expires.
+        public bool TryStackOrQueue(EffectRequest request, string slot, float dur)
+        {
+            lock (_effectExpiry)
+            {
+                if (_effectExpiry.TryGetValue(slot, out var exp) && DateTime.UtcNow < exp)
+                {
+                    _effectActiveCode.TryGetValue(slot, out var active);
+                    if (active == request.code)
+                    {
+                        _effectExpiry[slot] = exp.AddSeconds(dur);
+                        LoggerInstance.Msg($"Extended '{request.code}' (+{dur}s) on slot '{slot}'");
+                    }
+                    else
+                    {
+                        if (!_effectQueue.TryGetValue(slot, out var q))
+                            _effectQueue[slot] = q = new Queue<EffectRequest>();
+                        q.Enqueue(request);
+                        LoggerInstance.Msg($"Queued '{request.code}' behind '{active}' on slot '{slot}'");
+                    }
+                    return false;
+                }
+
+                _effectActiveCode[slot] = request.code;
+                return true;
+            }
+        }
+
         private static void ExpireEffect(string key)
         {
             Action cleanup = null;
+            EffectRequest next = null;
             lock (_effectExpiry)
             {
                 _effectExpiry.Remove(key);
                 _effectCleanup.TryGetValue(key, out cleanup);
                 _effectCleanup.Remove(key);
+                _effectActiveCode.Remove(key);
+                if (_effectQueue.TryGetValue(key, out var q) && q.Count > 0)
+                    next = q.Dequeue();
             }
+            // Run the active effect's cleanup first (it enqueues the reset onto
+            // PendingActions), THEN re-apply the next queued effect — so the reset
+            // runs before the queued effect re-captures the base state.
             cleanup?.Invoke();
+            if (next != null)
+            {
+                lock (PendingActions)
+                    PendingActions.Enqueue(() => Instance.ApplyEffect(next));
+            }
         }
 
         public override void OnApplicationStart()
@@ -327,79 +378,100 @@ namespace TrinyTokGOI
                     // ── Gravity (timed) ──────────────────────────────────────────
                     case "low_gravity":
                         if (TryDeferWhilePaused(request, !GameReady())) return;
-                        gravity = 1;
-                        Physics2D.gravity = new Vector2(0f, -10f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        if (TryStackOrQueue(request, "gravity", dur))
                         {
-                            gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
-                        }));
+                            gravity = 1;
+                            Physics2D.gravity = new Vector2(0f, -10f);
+                            ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
+                            }));
+                        }
                         break;
 
                     case "high_gravity":
                         if (TryDeferWhilePaused(request, !GameReady())) return;
-                        gravity = 2;
-                        Physics2D.gravity = new Vector2(0f, -45f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        if (TryStackOrQueue(request, "gravity", dur))
                         {
-                            gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
-                        }));
+                            gravity = 2;
+                            Physics2D.gravity = new Vector2(0f, -45f);
+                            ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
+                            }));
+                        }
                         break;
 
                     case "zero_gravity":
                         if (TryDeferWhilePaused(request, !GameReady())) return;
-                        gravity = -2;
-                        Physics2D.gravity = new Vector2(0f, 0f);
-                        ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                        if (TryStackOrQueue(request, "gravity", dur))
                         {
-                            gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
-                        }));
+                            gravity = -2;
+                            Physics2D.gravity = new Vector2(0f, 0f);
+                            ScheduleTimedEffect("gravity", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                gravity = 0; Physics2D.gravity = new Vector2(0f, -30f);
+                            }));
+                        }
                         break;
 
                     // ── Friction (timed) ─────────────────────────────────────────
                     case "low_friction":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        pot.slidingFriction.friction = 0.1f;
-                        pot.staticFriction.friction = 0.3f;
-                        friction = true;
-                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                        if (TryStackOrQueue(request, "friction", dur))
                         {
-                            if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
-                            friction = false;
-                        }));
+                            pot.slidingFriction.friction = 0.1f;
+                            pot.staticFriction.friction = 0.3f;
+                            friction = true;
+                            ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
+                                friction = false;
+                            }));
+                        }
                         break;
 
                     case "high_friction":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        pot.slidingFriction.friction = 0.6f;
-                        pot.staticFriction.friction = 1f;
-                        friction = true;
-                        ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                        if (TryStackOrQueue(request, "friction", dur))
                         {
-                            if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
-                            friction = false;
-                        }));
+                            pot.slidingFriction.friction = 0.6f;
+                            pot.staticFriction.friction = 1f;
+                            friction = true;
+                            ScheduleTimedEffect("friction", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                if (pot != null) { pot.slidingFriction.friction = 0.3f; pot.staticFriction.friction = 0.8f; }
+                                friction = false;
+                            }));
+                        }
                         break;
 
                     // ── Camera (timed) ───────────────────────────────────────────
                     case "flip_camera":
-                        if (TryDeferWhilePaused(request, !GameReady() || flip || spin)) return;
-                        flip = true;
-                        Camera.main.transform.Rotate(0f, 0f, 180f);
-                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                        if (TryDeferWhilePaused(request, !GameReady())) return;
+                        if (TryStackOrQueue(request, "camera", dur))
                         {
-                            Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
-                            flip = false;
-                        }));
+                            flip = true;
+                            Camera.main.transform.Rotate(0f, 0f, 180f);
+                            ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
+                                flip = false;
+                            }));
+                        }
                         break;
 
                     case "spin_camera":
-                        if (TryDeferWhilePaused(request, !GameReady() || flip || spin)) return;
-                        spin = true;
-                        ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                        if (TryDeferWhilePaused(request, !GameReady())) return;
+                        if (TryStackOrQueue(request, "camera", dur))
                         {
-                            Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
-                            spin = false;
-                        }));
+                            spin = true;
+                            ScheduleTimedEffect("camera", dur, () => PendingActions.Enqueue(() =>
+                            {
+                                Camera.main.transform.Rotate(0f, 0f, Camera.main.transform.rotation.eulerAngles.z * -1f);
+                                spin = false;
+                            }));
+                        }
                         break;
 
                     // ── Hammer size (timed) ──────────────────────────────────────
@@ -412,7 +484,7 @@ namespace TrinyTokGOI
                         var hub = player.transform.Find("Hub");
                         if (hub != null)
                         {
-                            if (!EffectRunning("hammer_size"))
+                            if (TryStackOrQueue(request, "hammer_size", dur))
                             {
                                 Vector3 baseScale = hub.localScale;
                                 float val = request.code == "big_hammer" ? 2.5f : 0.5f;
@@ -437,7 +509,7 @@ namespace TrinyTokGOI
                         var hinge = player.GetComponent<HingeJoint2D>();
                         if (hinge != null)
                         {
-                            if (!EffectRunning("rolling"))
+                            if (TryStackOrQueue(request, "rolling", dur))
                             {
                                 JointAngleLimits2D orig = hinge.limits;
                                 hinge.limits = new JointAngleLimits2D { min = -1000000f, max = 1000000f };
@@ -456,7 +528,7 @@ namespace TrinyTokGOI
                     // Same as the modpack: raise bounciness on the pot's physics materials.
                     case "bouncy":
                         if (TryDeferWhilePaused(request, !GameReady() || pot == null)) return;
-                        if (!EffectRunning("bouncy"))
+                        if (TryStackOrQueue(request, "bouncy", dur))
                         {
                             float sB  = pot.slidingFriction != null ? pot.slidingFriction.bounciness : 0f;
                             float stB = pot.staticFriction  != null ? pot.staticFriction.bounciness  : 0f;
@@ -475,7 +547,7 @@ namespace TrinyTokGOI
                     // triggers (so only the hammer collides) and hide their meshes.
                     case "only_hammer":
                         if (TryDeferWhilePaused(request, !GameReady() || player == null)) return;
-                        if (!EffectRunning("only_hammer"))
+                        if (TryStackOrQueue(request, "only_hammer", dur))
                         {
                             SetOnlyHammer(true);
                             ScheduleTimedEffect("only_hammer", dur, () => PendingActions.Enqueue(() => SetOnlyHammer(false)));
@@ -485,8 +557,11 @@ namespace TrinyTokGOI
                     // ── Input (timed) ────────────────────────────────────────────
                     case "invert_mouse":
                         if (TryDeferWhilePaused(request, !GameReady())) return;
-                        invert = true;
-                        ScheduleTimedEffect("invert_mouse", dur, () => PendingActions.Enqueue(() => { invert = false; }));
+                        if (TryStackOrQueue(request, "invert_mouse", dur))
+                        {
+                            invert = true;
+                            ScheduleTimedEffect("invert_mouse", dur, () => PendingActions.Enqueue(() => { invert = false; }));
+                        }
                         break;
 
                     // ── Prop spawns (instant) ─────────────────────────────────────
